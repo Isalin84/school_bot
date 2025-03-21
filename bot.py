@@ -1,16 +1,21 @@
 import sqlite3
 import asyncio
+import os
+import requests
+import random
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
-import os
 
 # Загружаем переменные окружения
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
+THE_CAT_API_KEY = os.getenv('THE_CAT_API_KEY')
+NASA_API_KEY = os.getenv('NASA_API_KEY')
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -33,7 +38,13 @@ class StudentForm(StatesGroup):
     age = State()
     grade = State()
 
-# --- Задание 1: Простое меню с кнопками /start ---
+# FSM для запроса информации о породе кошки
+class CatForm(StatesGroup):
+    breed = State()
+
+# --- Существующий функционал ---
+
+# Задание 1: Простое меню с кнопками /start
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     keyboard = ReplyKeyboardMarkup(
@@ -51,7 +62,7 @@ async def handle_buttons(message: Message):
     elif message.text == "Пока":
         await message.answer(f"До свидания, {message.from_user.first_name}!")
 
-# --- Задание 2: Кнопки с URL-ссылками /links ---
+# Задание 2: Кнопки с URL-ссылками /links
 @dp.message(Command("links"))
 async def send_links(message: Message):
     links = {
@@ -64,7 +75,7 @@ async def send_links(message: Message):
     ])
     await message.answer("Выберите ссылку:", reply_markup=keyboard)
 
-# --- Задание 3: Динамическое изменение клавиатуры /dynamic ---
+# Задание 3: Динамическое изменение клавиатуры /dynamic
 @dp.message(Command("dynamic"))
 async def dynamic_keyboard(message: Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -86,7 +97,7 @@ async def handle_option(callback: types.CallbackQuery):
     await callback.answer(text)
     await callback.message.edit_text(text)
 
-# --- Добавление ученика через команду /add ---
+# Добавление ученика через команду /add
 @dp.message(Command("add"))
 async def add_student_start(message: Message, state: FSMContext):
     await message.answer("Введите имя ученика:")
@@ -121,7 +132,7 @@ async def process_grade(message: Message, state: FSMContext):
     await message.answer(f"✅ Ученик добавлен:\nИмя: {user_data['name']}\nВозраст: {user_data['age']}\nКласс: {user_data['grade']}")
     await state.clear()
 
-# --- Просмотр всех учеников /students ---
+# Просмотр всех учеников /students
 @dp.message(Command("students"))
 async def list_students(message: Message):
     with sqlite3.connect('school_data.db') as conn:
@@ -138,6 +149,79 @@ async def list_students(message: Message):
 
     await message.answer(response)
 
+# --- Новый функционал с использованием сторонних API ---
+
+# Функции для работы с TheCatAPI
+def get_cat_breeds():
+    url = "https://api.thecatapi.com/v1/breeds"
+    headers = {"x-api-key": THE_CAT_API_KEY}
+    response = requests.get(url, headers=headers)
+    return response.json()
+
+def get_cat_image_by_breed(breed_id):
+    url = f"https://api.thecatapi.com/v1/images/search?breed_ids={breed_id}"
+    headers = {"x-api-key": THE_CAT_API_KEY}
+    response = requests.get(url, headers=headers)
+    data = response.json()
+    if data:
+        return data[0]['url']
+    return None
+
+def get_breed_info(breed_name):
+    breeds = get_cat_breeds()
+    for breed in breeds:
+        if breed['name'].lower() == breed_name.lower():
+            return breed
+    return None
+
+# Обработчик команды /cat для получения информации о породе кошки
+@dp.message(Command("cat"))
+async def cat_command(message: Message, state: FSMContext):
+    await message.answer("Введите название породы кошки:")
+    await state.set_state(CatForm.breed)
+
+@dp.message(CatForm.breed)
+async def process_cat_breed(message: Message, state: FSMContext):
+    breed_name = message.text
+    breed_info = get_breed_info(breed_name)
+    if breed_info:
+        cat_image_url = get_cat_image_by_breed(breed_info['id'])
+        info = (
+            f"Breed: {breed_info['name']}\n"
+            f"Origin: {breed_info['origin']}\n"
+            f"Description: {breed_info['description']}\n"
+            f"Temperament: {breed_info['temperament']}\n"
+            f"Life Span: {breed_info['life_span']} years"
+        )
+        if cat_image_url:
+            await message.answer_photo(photo=cat_image_url, caption=info)
+        else:
+            await message.answer(info)
+    else:
+        await message.answer("Порода не найдена. Попробуйте еще раз.")
+    await state.clear()
+
+# Функция для получения случайного изображения от NASA (APOD)
+def get_random_apod():
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=365)
+    random_date = start_date + (end_date - start_date) * random.random()
+    date_str = random_date.strftime("%Y-%m-%d")
+    url = f'https://api.nasa.gov/planetary/apod?api_key={NASA_API_KEY}&date={date_str}'
+    response = requests.get(url)
+    return response.json()
+
+# Обработчик команды /random_apod для получения случайного фото от NASA
+@dp.message(Command("random_apod"))
+async def random_apod_handler(message: Message):
+    apod = get_random_apod()
+    if 'url' in apod and 'title' in apod:
+        photo_url = apod['url']
+        title = apod['title']
+        await message.answer_photo(photo=photo_url, caption=f"{title}")
+    else:
+        await message.answer("Не удалось получить данные от NASA.")
+
 # --- Установка команд для бота ---
 async def set_commands(bot: Bot):
     commands = [
@@ -145,7 +229,9 @@ async def set_commands(bot: Bot):
         types.BotCommand(command="/links", description="Кнопки с URL-ссылками"),
         types.BotCommand(command="/dynamic", description="Динамическое меню"),
         types.BotCommand(command="/add", description="Добавить ученика"),
-        types.BotCommand(command="/students", description="Список учеников")
+        types.BotCommand(command="/students", description="Список учеников"),
+        types.BotCommand(command="/cat", description="Информация о породе кошки"),
+        types.BotCommand(command="/random_apod", description="Случайное фото от NASA")
     ]
     await bot.set_my_commands(commands)
 
